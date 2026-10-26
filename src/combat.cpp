@@ -428,26 +428,25 @@ bool Bot::LookupEnemies () {
   enemy_parts_ = Visibility::None;
   enemy_origin_.clear ();
 
-  // Не ищем врагов, если раунд ещё не стартовал, либо действует ослепление/таймеры
   if (cv_ignore_enemies || !enemy_ignore_timer_.elapsed () || !blind_timer_.elapsed ()) {
     return false;
   }
 
-  // Защита от стрельбы до раунда: если раунд только начался или время от старта меньше 15 секунд,
-  // проверяем, появился ли хотя бы один реальный зомби (высокое HP или чисто нож без огнестрела)
-  if (game_state.TimeSinceRoundStart () < 15.0f) {
-    bool zombie_exists = false;
-    for (const auto &cl : clients) {
-      if (cl.IsUsedAndAlive () && cl.ent != nullptr) {
-        if (cl.ent->v.health > 1500.0f || (has_flag (cl.ent->v.weapons, kKnifeWeaponMask) && !has_flag (cl.ent->v.weapons, kPrimaryWeaponMask | kSecondaryWeaponMask))) {
-          zombie_exists = true;
-          break;
-        }
+  // Защита от стрельбы до раунда: если на сервере пока нет ни одного зомби 
+  // (у зомби здоровье больше 1500 или нет огнестрельного оружия), врагов не ищем
+  bool zombie_found = false;
+  for (const auto &client : clients) {
+    if (client.IsUsedAndAlive () && client.ent != nullptr) {
+      const bool has_guns = has_flag (client.ent->v.weapons, kPrimaryWeaponMask) || has_flag (client.ent->v.weapons, kSecondaryWeaponMask);
+      if (client.ent->v.health > 1500.0f || !has_guns) {
+        zombie_found = true;
+        break;
       }
     }
-    if (!zombie_exists) {
-      return false; // До заражения ни в кого не целимся и не стреляем
-    }
+  }
+
+  if (!zombie_found) {
+    return false; // До заражения стрельба и выбор целей полностью отключены
   }
 
   edict_t *player, *new_enemy = nullptr;
@@ -996,7 +995,6 @@ void Bot::AttackMovement () {
   }
   const bool is_enemy_cone = IsInViewCone (enemy_->v.origin);
 
-  // Зомби (UsesKnife или существо) никогда не ищет укрытия и не отступает
   if (!UsesKnife () && !is_creature_ && !game.Is (GameFlags::CSDM) && !IsKnifeMode ()) {
     if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
         (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
@@ -1015,13 +1013,12 @@ void Bot::AttackMovement () {
     }
   }
   else if (UsesKnife () || is_creature_) {
-    // Зомби всегда бежит строго вперед на максимальной скорости
     move_speed_ = pev->maxspeed;
   }
 
   if (fight_style_check_timer_.elapsed ()) {
     if (UsesKnife () || is_creature_) {
-      fight_style_ = Fight::Strafe; // Зомби никогда не встает на месте
+      fight_style_ = Fight::Strafe;
     }
     else if (UsesSniper () && !reload_data_.is_reloading && !sniper_stop_timer_.elapsed ()) {
       fight_style_ = Fight::Stay;
@@ -1186,7 +1183,6 @@ void Bot::AttackMovement () {
       strafe_speed_ = 0.0f;
     }
     else {
-      // Сохраняем присед только если бот уже сидит в нычке/проходе, убирая боевой присед на открытом месте
       const bool already_ducking = !duck_timer_.elapsed () || IsDucking () || ((pev->button | pev->oldbuttons) & IN_DUCK);
 
       if (already_ducking && IsInNarrowPlace ()) {
