@@ -432,8 +432,7 @@ bool Bot::LookupEnemies () {
     return false;
   }
 
-  // Защита от стрельбы до раунда: если на сервере пока нет ни одного зомби 
-  // (у зомби здоровье больше 1500 или нет огнестрельного оружия), врагов не ищем
+  // Защита от стрельбы до раунда: если на сервере пока нет ни одного зомби
   bool zombie_found = false;
   for (const auto &client : clients) {
     if (client.IsUsedAndAlive () && client.ent != nullptr) {
@@ -446,7 +445,7 @@ bool Bot::LookupEnemies () {
   }
 
   if (!zombie_found) {
-    return false; // До заражения стрельба и выбор целей полностью отключены
+    return false;
   }
 
   edict_t *player, *new_enemy = nullptr;
@@ -965,7 +964,12 @@ void Bot::AttackMovement () {
     return;
   }
 
-  if (UsesKnife () || is_creature_) {
+  const bool is_bot_zombie = UsesKnife () || is_creature_ || pev->health > 1500.0f;
+  const bool is_target_zombie = (enemy_->v.health > 1500.0f) || 
+                                (!has_flag (enemy_->v.weapons, kPrimaryWeaponMask) && !has_flag (enemy_->v.weapons, kSecondaryWeaponMask));
+
+  // Зомби всегда стремится к точке врага
+  if (is_bot_zombie) {
     dest_origin_ = enemy_->v.origin;
   }
 
@@ -974,11 +978,13 @@ void Bot::AttackMovement () {
   }
 
   const auto distance_sq = pev->origin.distance_sq (enemy_->v.origin);
+  const bool is_enemy_cone = IsInViewCone (enemy_->v.origin);
 
   auto approach = 0;
 
-  if (UsesKnife () || is_creature_) {
+  if (is_bot_zombie) {
     approach = 100;
+    move_speed_ = pev->maxspeed;
   }
   else if (has_flag (states_, Sense::SuspectEnemy) && !has_flag (states_, Sense::SeeingEnemy)) {
     approach = 49;
@@ -993,34 +999,59 @@ void Bot::AttackMovement () {
       approach = 49;
     }
   }
-  const bool is_enemy_cone = IsInViewCone (enemy_->v.origin);
 
-  if (!UsesKnife () && !is_creature_ && !game.Is (GameFlags::CSDM) && !IsKnifeMode ()) {
-    if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
-        (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
+  // Человек убегает (кайтинг): увеличен радиус до 800 юнитов
+  if (!is_bot_zombie) {
+    const float retreat_dist = is_target_zombie ? 800.0f : 350.0f;
 
-      StartTask (TaskId::SeekCover, TaskPri::kSeekCover, kInvalidNodeIndex, 0.0f, true);
+    if (distance_sq < ystl::sqrf (retreat_dist)) {
+      move_speed_ = -pev->maxspeed;
+    }
+    else if (!game.Is (GameFlags::CSDM) && !IsKnifeMode ()) {
+      if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
+          (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
 
-      if (!CheckWallOnBehind ()) {
-        move_speed_ = -pev->maxspeed;
+        StartTask (TaskId::SeekCover, TaskPri::kSeekCover, kInvalidNodeIndex, 0.0f, true);
+
+        if (!CheckWallOnBehind ()) {
+          move_speed_ = -pev->maxspeed;
+        }
+      }
+      else if (approach < 50) {
+        move_speed_ = 0.0f;
+      }
+      else {
+        move_speed_ = pev->maxspeed;
       }
     }
-    else if (approach < 50) {
-      move_speed_ = 0.0f;
-    }
-    else {
-      move_speed_ = pev->maxspeed;
-    }
-  }
-  else if (UsesKnife () || is_creature_) {
-    move_speed_ = pev->maxspeed;
   }
 
-  if (fight_style_check_timer_.elapsed ()) {
-    if (UsesKnife () || is_creature_) {
-      fight_style_ = Fight::Strafe;
+  // Зомби: помощь в преодолении препятствий и залезании в нычки
+  if (is_bot_zombie) {
+    fight_style_ = Fight::Strafe;
+
+    // Проверяем преграду перед лицом зомби
+    Trace::Result front_tr {};
+    const ystl::Vector eyes = GetEyesPos ();
+    const ystl::Vector forward = pev->v_angle.forward ();
+
+    trace.Line (eyes, eyes + forward * 48.0f, TraceIgnore::Monsters, Ent (), &front_tr);
+
+    // Если упёрся в стену или низкий проём — приседаем и прыгаем
+    if (front_tr.fraction < 1.0f) {
+      pev->button |= IN_DUCK;
+
+      // Если препятствие можно перепрыгнуть
+      if (IsOnFloor () && jump_time_ + 1.0f < game.Time ()) {
+        pev->button |= IN_JUMP;
+      }
     }
-    else if (UsesSniper () && !reload_data_.is_reloading && !sniper_stop_timer_.elapsed ()) {
+    else if (IsInNarrowPlace ()) {
+      pev->button |= IN_DUCK;
+    }
+  }
+  else if (fight_style_check_timer_.elapsed ()) {
+    if (UsesSniper () && !reload_data_.is_reloading && !sniper_stop_timer_.elapsed ()) {
       fight_style_ = Fight::Stay;
     }
     else if (UsesRifle () || UsesSubmachine () || UsesHeavy ()) {
@@ -1065,17 +1096,6 @@ void Bot::AttackMovement () {
       fight_style_ = Fight::Strafe;
     }
     fight_style_check_timer_.start (rg (1.0f, 3.0f));
-  }
-
-  // Человек пятится назад, если враг с ножом/лапами подошел ближе 400 юнитов
-  if (!UsesKnife () && !is_creature_ && distance_sq < ystl::sqrf (400.0f)) {
-    move_speed_ = -pev->maxspeed;
-  }
-
-  if ((UsesKnife () && is_enemy_cone) || is_creature_) {
-    if (distance_sq < ystl::sqrf (100.0f)) {
-      fight_style_ = Fight::Strafe;
-    }
   }
 
   if (fight_style_ == Fight::Strafe) {
@@ -1159,7 +1179,7 @@ void Bot::AttackMovement () {
       }
     }
 
-    if (wall_on_right && wall_on_left && !UsesKnife ()) {
+    if (wall_on_right && wall_on_left && !is_bot_zombie) {
       strafe_speed_ = 0.0f;
       move_speed_ = 0.0f;
 
@@ -1167,7 +1187,7 @@ void Bot::AttackMovement () {
       dodge_strafe_dir_ = Dodge::None;
     }
 
-    if (!UsesKnife () && approach >= 30) {
+    if (!is_bot_zombie && approach >= 30 && distance_sq >= ystl::sqrf (800.0f)) {
       move_speed_ = 0.0f;
     }
 
@@ -1178,7 +1198,7 @@ void Bot::AttackMovement () {
     }
   }
   else if (fight_style_ == Fight::Stay) {
-    if ((UsesKnife () || is_creature_) && distance_sq < ystl::sqrf (128.0f)) {
+    if (is_bot_zombie) {
       move_speed_ = pev->maxspeed;
       strafe_speed_ = 0.0f;
     }
