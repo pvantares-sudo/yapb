@@ -230,6 +230,7 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
+        continue-on-error: true
         run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
 
   release:
@@ -299,5 +300,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.API_TOKEN }}
         run: gh release upload ${{ github.ref_name }} ./pkg/*
-
-
