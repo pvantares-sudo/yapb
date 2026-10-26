@@ -476,7 +476,7 @@ bool Bot::LookupEnemies () {
         SeesEnemy (player)) {
 
       new_enemy = player;
-      enemy_update_timer_.start (UsesKnife () ? 1.25f : 0.85f);
+      enemy_update_timer_.start (is_bot_zombie ? 0.3f : 0.85f);
     }
   }
 
@@ -572,7 +572,7 @@ bool Bot::LookupEnemies () {
         target_switch_timer_.start (1.5f);
       }
     }
-    enemy_update_timer_.start (UsesKnife () ? 1.25f : 0.85f);
+    enemy_update_timer_.start (is_bot_zombie ? 0.3f : 0.85f);
 
     if (game.IsNullEntity (new_enemy) && !game.IsNullEntity (shield_enemy)) {
       new_enemy = shield_enemy;
@@ -580,7 +580,6 @@ bool Bot::LookupEnemies () {
   }
 
   // --- ГЛОБАЛЬНЫЙ РАДАР (WALLHACK) ДЛЯ ЗОМБИ ---
-  // Если зомби никого не видит в упор, он находит ближайшего живого человека сквозь стены и бежит к нему по вейпоинтам
   if (game.IsNullEntity (new_enemy) && is_bot_zombie) {
     float closest_dist_sq = ystl::kInfiniteDistance;
     edict_t *closest_human = nullptr;
@@ -590,7 +589,6 @@ bool Bot::LookupEnemies () {
         continue;
       }
 
-      // Человек - игрок без сверх-HP зомби
       if (client.ent->v.health <= 1500.0f) {
         const float d_sq = pev->origin.distance_sq (client.ent->v.origin);
         if (d_sq < closest_dist_sq) {
@@ -606,7 +604,6 @@ bool Bot::LookupEnemies () {
       states_ |= Sense::SuspectEnemy;
       aim_flags_ |= AimFlags::PredictPath;
 
-      // Задаем навигатору глобальную цель преследования (Hunt) к человеку
       if (GetTaskId () != TaskId::Hunt) {
         const int target_node = graph.GetNearest (last_enemy_origin_);
         if (graph.Exists (target_node)) {
@@ -943,6 +940,9 @@ void Bot::FocusEnemy () {
     return;
   }
 
+  const bool is_bot_zombie = UsesKnife () || is_creature_ || pev->health > 1500.0f;
+
+  // Aim for the head/body
   look_at_ = GetEnemyBodyOffset ();
 
   if (!enemy_surprise_timer_.elapsed ()) {
@@ -953,16 +953,25 @@ void Bot::FocusEnemy () {
   const float dot = util.ViewDot (Ent (), enemy_origin_);
   const float enemy_dot = util.ViewDot (enemy_, pev->origin);
 
-  if (distance_sq < ystl::sqrf (128.0f) && !UsesSniper ()) {
-    if (UsesKnife ()) {
-      if (distance_sq < ystl::sqrf (80.0f)) {
-        wants_to_fire_ = true;
-      }
-      else {
-        wants_to_fire_ = false;
-      }
+  // --- АГРЕССИВНАЯ АТАКА ЛАПАМИ ДЛЯ ЗОМБИ ---
+  if (is_bot_zombie) {
+    // Зомби начинает махать лапами заранее (до 130 юнитов) даже при широком угле прицела (dot > 0.50f)
+    if (distance_sq < ystl::sqrf (130.0f) && dot > 0.50f) {
+      wants_to_fire_ = true;
     }
-    else if (dot > 0.80f) {
+    // В упоре (до 90 юнитов) жмём атаку гарантированно в любом положении
+    else if (distance_sq < ystl::sqrf (90.0f)) {
+      wants_to_fire_ = true;
+    }
+    else {
+      wants_to_fire_ = false;
+    }
+    return;
+  }
+
+  // Стандартная стрельба для людей
+  if (distance_sq < ystl::sqrf (128.0f) && !UsesSniper ()) {
+    if (dot > 0.80f) {
       wants_to_fire_ = true;
     }
     else {
@@ -974,21 +983,11 @@ void Bot::FocusEnemy () {
       wants_to_fire_ = false;
     }
     else {
-      if (UsesKnife ()) {
+      if (enemy_dot >= 0.90f || dot > 0.99f) {
         wants_to_fire_ = true;
       }
       else {
-        if (enemy_dot >= 0.90f) {
-          wants_to_fire_ = true;
-        }
-        else {
-          if (dot > 0.99f) {
-            wants_to_fire_ = true;
-          }
-          else {
-            wants_to_fire_ = false;
-          }
-        }
+        wants_to_fire_ = false;
       }
     }
 
@@ -1038,6 +1037,7 @@ void Bot::AttackMovement () {
     }
   }
 
+  // --- КАЙТИНГ ДЛЯ ЛЮДЕЙ ---
   if (!is_bot_zombie) {
     const float retreat_dist = is_target_zombie ? 800.0f : 350.0f;
 
@@ -1063,9 +1063,20 @@ void Bot::AttackMovement () {
     }
   }
 
+  // --- ПЕРЕМЕЩЕНИЕ ЗОМБИ (БЕЗ СТРАХА И ТАНЦЕВ) ---
   if (is_bot_zombie) {
-    fight_style_ = Fight::Strafe;
+    move_speed_ = pev->maxspeed;
 
+    // В упоре (дистанция меньше 200 юнитов) отключаем любые боковые стрейфы - бежим напролом
+    if (distance_sq < ystl::sqrf (200.0f)) {
+      fight_style_ = Fight::Stay; // Не активируем Strafe-логику
+      strafe_speed_ = 0.0f;
+    }
+    else {
+      fight_style_ = Fight::Strafe;
+    }
+
+    // Проверяем препятствие перед лицом для преодоления нычек и ящиков
     Trace::Result front_tr {};
     const ystl::Vector eyes = GetEyesPos ();
     const ystl::Vector forward = pev->v_angle.forward ();
@@ -1075,7 +1086,7 @@ void Bot::AttackMovement () {
     if (front_tr.fraction < 1.0f) {
       pev->button |= IN_DUCK;
 
-      if (IsOnFloor () && jump_time_ + 1.0f < game.Time ()) {
+      if (IsOnFloor () && jump_time_ + 0.8f < game.Time ()) {
         pev->button |= IN_JUMP;
       }
     }
@@ -1131,7 +1142,7 @@ void Bot::AttackMovement () {
     fight_style_check_timer_.start (rg (1.0f, 3.0f));
   }
 
-  if (fight_style_ == Fight::Strafe) {
+  if (fight_style_ == Fight::Strafe && (!is_bot_zombie || distance_sq >= ystl::sqrf (200.0f))) {
     auto swap_dodge_direction = [&] () {
       dodge_strafe_dir_ = (dodge_strafe_dir_ == Dodge::Left ? Dodge::Right : Dodge::Left);
     };
@@ -1246,7 +1257,7 @@ void Bot::AttackMovement () {
     }
   }
 
-  if (reload_data_.is_reloading) {
+  if (reload_data_.is_reloading && !is_bot_zombie) {
     move_speed_ = -pev->maxspeed;
 
     if (is_enemy_cone) {
