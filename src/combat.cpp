@@ -432,7 +432,9 @@ bool Bot::LookupEnemies () {
     return false;
   }
 
-  // Защита от стрельбы до раунда: если на сервере пока нет ни одного зомби
+  const bool is_bot_zombie = UsesKnife () || is_creature_ || pev->health > 1500.0f;
+
+  // Проверка начала раунда: появился ли хотя бы один зомби
   bool zombie_found = false;
   for (const auto &client : clients) {
     if (client.IsUsedAndAlive () && client.ent != nullptr) {
@@ -574,6 +576,43 @@ bool Bot::LookupEnemies () {
 
     if (game.IsNullEntity (new_enemy) && !game.IsNullEntity (shield_enemy)) {
       new_enemy = shield_enemy;
+    }
+  }
+
+  // --- ГЛОБАЛЬНЫЙ РАДАР (WALLHACK) ДЛЯ ЗОМБИ ---
+  // Если зомби никого не видит в упор, он находит ближайшего живого человека сквозь стены и бежит к нему по вейпоинтам
+  if (game.IsNullEntity (new_enemy) && is_bot_zombie) {
+    float closest_dist_sq = ystl::kInfiniteDistance;
+    edict_t *closest_human = nullptr;
+
+    for (const auto &client : clients) {
+      if (!client.IsUsedAndAlive () || client.IsSameTeam (team_) || client.ent == nullptr) {
+        continue;
+      }
+
+      // Человек - игрок без сверх-HP зомби
+      if (client.ent->v.health <= 1500.0f) {
+        const float d_sq = pev->origin.distance_sq (client.ent->v.origin);
+        if (d_sq < closest_dist_sq) {
+          closest_dist_sq = d_sq;
+          closest_human = client.ent;
+        }
+      }
+    }
+
+    if (closest_human != nullptr) {
+      last_enemy_ = closest_human;
+      last_enemy_origin_ = closest_human->v.origin;
+      states_ |= Sense::SuspectEnemy;
+      aim_flags_ |= AimFlags::PredictPath;
+
+      // Задаем навигатору глобальную цель преследования (Hunt) к человеку
+      if (GetTaskId () != TaskId::Hunt) {
+        const int target_node = graph.GetNearest (last_enemy_origin_);
+        if (graph.Exists (target_node)) {
+          StartTask (TaskId::Hunt, TaskPri::kHunt, target_node, game.Time () + 5.0f, false);
+        }
+      }
     }
   }
 
@@ -968,7 +1007,6 @@ void Bot::AttackMovement () {
   const bool is_target_zombie = (enemy_->v.health > 1500.0f) || 
                                 (!has_flag (enemy_->v.weapons, kPrimaryWeaponMask) && !has_flag (enemy_->v.weapons, kSecondaryWeaponMask));
 
-  // Зомби всегда стремится к точке врага
   if (is_bot_zombie) {
     dest_origin_ = enemy_->v.origin;
   }
@@ -1000,7 +1038,6 @@ void Bot::AttackMovement () {
     }
   }
 
-  // Человек убегает (кайтинг): увеличен радиус до 800 юнитов
   if (!is_bot_zombie) {
     const float retreat_dist = is_target_zombie ? 800.0f : 350.0f;
 
@@ -1026,22 +1063,18 @@ void Bot::AttackMovement () {
     }
   }
 
-  // Зомби: помощь в преодолении препятствий и залезании в нычки
   if (is_bot_zombie) {
     fight_style_ = Fight::Strafe;
 
-    // Проверяем преграду перед лицом зомби
     Trace::Result front_tr {};
     const ystl::Vector eyes = GetEyesPos ();
     const ystl::Vector forward = pev->v_angle.forward ();
 
     trace.Line (eyes, eyes + forward * 48.0f, TraceIgnore::Monsters, Ent (), &front_tr);
 
-    // Если упёрся в стену или низкий проём — приседаем и прыгаем
     if (front_tr.fraction < 1.0f) {
       pev->button |= IN_DUCK;
 
-      // Если препятствие можно перепрыгнуть
       if (IsOnFloor () && jump_time_ + 1.0f < game.Time ()) {
         pev->button |= IN_JUMP;
       }
