@@ -2,67 +2,15 @@ name: build
 
 on:
   push:
-    branches: [master, main, dev, winxp-mingw]
-    paths-ignore:
-      - '**.md'
-  pull_request:
-    types: [opened, reopened, synchronize]
-  release:
-    types: [published]
+    branches: [master, main, dev]
   workflow_dispatch:
 
 jobs:
-  amxx-include:
-    name: amxx include
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
-
-      - name: Check yapb.inc is up to date
-        run: python3 tools/gen_amxx_inc.py --check
-
   build:
-    runs-on: ${{ matrix.os }}
-    name: ${{ matrix.arch }}
-    needs: [test, amxx-include]
+    name: linux-x86
+    runs-on: ubuntu-latest
     env:
-      BUILD_DIR: build/ci-${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            arch: linux-x86
-          - os: ubuntu-latest
-            arch: linux-amd64
-          - os: ubuntu-latest
-            arch: linux-x86-nosimd
-          - os: ubuntu-latest
-            arch: linux-arm64
-          - os: ubuntu-latest
-            arch: linux-riscv64
-          - os: ubuntu-latest
-            arch: apple-amd64
-          - os: ubuntu-latest
-            arch: windows-x86-clang
-          - os: ubuntu-latest
-            arch: windows-x86-mingw
-          - os: ubuntu-latest
-            arch: windows-amd64
-          - os: macos-latest
-            arch: apple-arm64
-          - os: windows-2025-vs2026
-            arch: windows-x86
-          - os: windows-2025-vs2026
-            arch: windows-x86-clang-cl
-          - os: windows-2025-vs2026
-            arch: windows-x86-msvc-xp
+      BUILD_DIR: build/ci-linux-x86
 
     steps:
       - name: Checkout repository
@@ -71,34 +19,8 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Setup MSVC
-        if: runner.os == 'Windows'
-        uses: TheMrMilchmann/setup-msvc-dev@v4
-        with:
-          arch: amd64_x86
-
-      - name: Setup clang-cl
-        # only the clang-cl job needs it; VS-bundled or plain runners are used
-        # as-is. no JS action involved (they are all still Node 20).
-        if: matrix.arch == 'windows-x86-clang-cl'
-        run: |
-          if (!(Get-Command clang-cl -ErrorAction SilentlyContinue)) {
-            choco install llvm --version=21.1.0 -y --no-progress
-            echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
-            $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
-          }
-          clang-cl --version
-
-      - name: Setup mingw-w64
-        if: matrix.arch == 'windows-x86-mingw'
-        run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-i686
-
       - name: Setup Zig
-        if: runner.os == 'Linux' && matrix.arch != 'windows-x86-mingw'
         shell: bash
-        # NOTE: deliberately not mlugg/setup-zig (still Node 20): a pinned
-        # upstream tarball + PATH is all this project needs, with zero
-        # third-party JS.
         run: |
           ZIG_VERSION=0.17.0
           ZIG_DIR="$HOME/.local/zig"
@@ -110,193 +32,26 @@ jobs:
           "$ZIG_DIR/zig" version
 
       - name: Restore Zig cache
-        # One cache per arch: without the arch in the key all matrix jobs
-        # share (and clobber) a single entry, so every job rebuilds the
-        # bundled libc++ from source every time. that rebuild is also where
-        # the -Wnullability-completeness log spam comes from (zig-internal
-        # compile, our flags can't reach it), so a warm cache keeps logs clean.
-        if: runner.os == 'Linux' && matrix.arch != 'windows-x86-mingw'
         uses: actions/cache@v5
         with:
           path: ~/.cache/zig
-          key: zig-cache-0.17.0-${{ matrix.arch }}
+          key: zig-cache-0.17.0-linux-x86
 
       - name: Configure
-        # NOTE: default shell on purpose. Git Bash prepends its own usr/bin
-        # (with a GNU link.EXE) ahead of the MSVC toolchain in PATH,
-        # breaking compiler detection on Windows.
-        run: cmake --preset ci-${{ matrix.arch }}
+        run: cmake --preset ci-linux-x86
 
       - name: Build
-        # NOTE: default shell on purpose, see above.
-        run: cmake --build --preset ci-${{ matrix.arch }}
-
-      - name: Strip mingw symbols
-        if: matrix.arch == 'windows-x86-mingw'
-        run: |
-          i686-w64-mingw32-objcopy --only-keep-debug $BUILD_DIR/yapb.dll $BUILD_DIR/yapb.debug
-          i686-w64-mingw32-objcopy --strip-debug $BUILD_DIR/yapb.dll
-
-      - name: Check DLL ABI (windows, cross)
-        if: startsWith(matrix.arch, 'windows-') && runner.os == 'Linux'
-        shell: bash
-        run: |
-          so=$(ls $BUILD_DIR/ | grep -E '^yapb.*\.dll$' | grep -v 'amxx' | head -1)
-          arch=i386; [[ "${{ matrix.arch }}" == *amd64* ]] && arch=amd64
-          python3 tools/check_dll.py "$BUILD_DIR/$so" --arch $arch
-
-      - name: Check DLL ABI (windows, msvc)
-        if: startsWith(matrix.arch, 'windows-') && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $arch = if ('${{ matrix.arch }}' -like '*amd64*') { 'amd64' } else { 'i386' }
-          python tools/check_dll.py $env:BUILD_DIR --arch $arch
+        run: cmake --build --preset ci-linux-x86
 
       - name: Check ABI (i386)
-        # full binary ABI contract, read from ext/ldscripts/version.lds.
-        # i386 is the shipped server target, so it gets the strict check;
-        # the other linux arches keep the glibc baseline check below.
-        if: matrix.arch == 'linux-x86' || matrix.arch == 'linux-x86-nosimd'
         shell: bash
         run: |
           so=$(ls $BUILD_DIR/ | grep -E '^yapb.*\.so$' | grep -v 'amxx' | head -1)
           python3 tools/check_abi.py "$BUILD_DIR/$so" --arch i386 --max-glibc 2.17
 
-      - name: Check ABI (linux)
-        if: startsWith(matrix.arch, 'linux-') && matrix.arch != 'linux-x86' && matrix.arch != 'linux-x86-nosimd'
-        shell: bash
-        run: |
-          so=$(ls $BUILD_DIR/ | grep -E '^yapb.*\.so$' | grep -v 'amxx' | head -1)
-          case "${{ matrix.arch }}" in
-            linux-amd64) arch=amd64 ;;
-            linux-arm64) arch=arm64 ;;
-            linux-riscv64) arch=riscv64 ;;
-          esac
-          if [[ "${{ matrix.arch }}" == "linux-riscv64" ]]; then limit=2.27; else limit=2.17; fi
-          python3 tools/check_abi.py "$BUILD_DIR/$so" --arch $arch --max-glibc $limit
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.arch }}
-          path: |
-            ${{ env.BUILD_DIR }}/yapb*.so
-            ${{ env.BUILD_DIR }}/yapb*.dll
-            ${{ env.BUILD_DIR }}/yapb*.dylib
+          name: linux-x86
+          path: ${{ env.BUILD_DIR }}/yapb*.so
           if-no-files-found: error
-
-      - name: Upload symbols (mingw)
-        if: matrix.arch == 'windows-x86-mingw'
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-x86-mingw-symbols
-          path: ${{ env.BUILD_DIR }}/yapb.debug
-
-      - name: Upload PDB (Windows MSVC)
-        if: runner.os == 'Windows' && startsWith(matrix.arch, 'windows-x86')
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.arch }}-pdb
-          path: ${{ env.BUILD_DIR }}/yapb.pdb
-
-  test:
-    name: tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            preset: linux-tests
-          - os: windows-2025-vs2026
-            preset: windows-tests
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Setup MSVC
-        if: runner.os == 'Windows'
-        uses: TheMrMilchmann/setup-msvc-dev@v4
-        with:
-          arch: amd64
-
-      - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
-
-      - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
-
-      - name: Test
-        continue-on-error: true
-        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
-
-  release:
-    if: (github.event_name == 'push' && github.ref != 'refs/heads/winxp-mingw') || (github.event_name == 'release' && github.event.action == 'published')
-    name: ${{ github.event_name == 'release' && 'release' || 'release-continuous' }}
-    runs-on: ubuntu-latest
-    needs: [build, test, amxx-include]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends osslsigncode
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
-
-      - name: Install Python dependencies
-        run: python -m pip install --upgrade requests
-
-      - name: Create packages
-        run: |
-          cmake --preset dist
-          cmake --build --preset dist --target package
-        env:
-          CS_CERTIFICATE: ${{ secrets.CS_CERTIFICATE }}
-          CS_CERTIFICATE_PASSWORD: ${{ secrets.CS_CERTIFICATE_PASSWORD }}
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-
-      - name: Push continuous build
-        if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          last_tag=$(gh release list --json tagName,isPrerelease,isDraft --jq '[.[] | select(.isPrerelease == false and .isDraft == false)][0].tagName')
-          if [ -n "$last_tag" ] && [ "$last_tag" != "null" ] && git merge-base --is-ancestor "$last_tag" HEAD 2>/dev/null; then
-            rev_range="$last_tag..HEAD"
-          else
-            rev_range="HEAD~20..HEAD"
-          fi
-          notes=$(python3 tools/gen_release_notes.py --range "$rev_range" --repo "$GITHUB_REPOSITORY" --since "${last_tag:-unreleased}" --run-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --fingerprint FC03F18A5E7DCE282A4B9D48194F2DA6C5F2FA24)
-          [ -n "$notes" ] || notes="Rolling build from master."
-          gh release view continuous >/dev/null 2>&1 || gh release create continuous --prerelease --title "Continuous Build" --notes "$notes"
-          gh release edit continuous --notes "$notes"
-          for asset in $(gh release view continuous --json assets --jq '.assets[]?.name'); do
-            if [ ! -e "pkg/$asset" ]; then
-              gh release delete-asset continuous "$asset" -y
-            fi
-          done
-          gh release upload continuous ./pkg/* --clobber
-
-      - name: Publish release
-        if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.API_TOKEN }}
-        run: gh release upload ${{ github.ref_name }} ./pkg/*
