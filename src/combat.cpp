@@ -607,7 +607,7 @@ bool Bot::LookupEnemies () {
       if (GetTaskId () != TaskId::Hunt) {
         const int target_node = graph.GetNearest (last_enemy_origin_);
         if (graph.Exists (target_node)) {
-          StartTask (TaskId::Hunt, 0.0f, target_node, game.Time () + 5.0f, false);
+          StartTask (TaskId::Hunt, TaskPri::kSeekCover, target_node, game.Time () + 5.0f, false);
         }
       }
     }
@@ -1043,7 +1043,7 @@ void Bot::AttackMovement () {
       if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
           (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
 
-        StartTask (TaskId::SeekCover, kTaskPriCover, kInvalidNodeIndex, 0.0f, true);
+        StartTask (TaskId::SeekCover, TaskPri::kSeekCover, kInvalidNodeIndex, 0.0f, true);
 
         if (!CheckWallOnBehind ()) {
           move_speed_ = -pev->maxspeed;
@@ -1771,13 +1771,13 @@ void Bot::CheckGrenadesThrow () {
     const float max_throw_time = game.Time () + kGrenadeCheckTime * 3.6f;
 
     if (has_flag (states_, Sense::ThrowExplosive)) {
-      StartTask (TaskId::ThrowExplosive, kTaskPriThrow, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowExplosive, TaskPri::kThrow, kInvalidNodeIndex, max_throw_time, false);
     }
     else if (has_flag (states_, Sense::ThrowFlashbang)) {
-      StartTask (TaskId::ThrowFlashbang, kTaskPriThrow, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowFlashbang, TaskPri::kThrow, kInvalidNodeIndex, max_throw_time, false);
     }
     else if (has_flag (states_, Sense::ThrowSmoke)) {
-      StartTask (TaskId::ThrowSmoke, kTaskPriThrow, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowSmoke, TaskPri::kThrow, kInvalidNodeIndex, max_throw_time, false);
     }
   }
   else {
