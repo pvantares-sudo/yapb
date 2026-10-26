@@ -476,7 +476,6 @@ bool Bot::LookupEnemies () {
         SeesEnemy (player)) {
 
       new_enemy = player;
-      // Зомби мгновенно пересчитывает перемещения жертвы
       enemy_update_timer_.start (is_bot_zombie ? 0.3f : (UsesKnife () ? 1.25f : 0.85f));
     }
   }
@@ -590,7 +589,6 @@ bool Bot::LookupEnemies () {
         continue;
       }
 
-      // Человек - игрок без сверх-HP зомби
       if (client.ent->v.health <= 1500.0f) {
         const float d_sq = pev->origin.distance_sq (client.ent->v.origin);
         if (d_sq < closest_dist_sq) {
@@ -609,7 +607,7 @@ bool Bot::LookupEnemies () {
       if (GetTaskId () != TaskId::Hunt) {
         const int target_node = graph.GetNearest (last_enemy_origin_);
         if (graph.Exists (target_node)) {
-          StartTask (TaskId::Hunt, TaskPri::Normal, target_node, game.Time () + 5.0f, false);
+          StartTask (TaskId::Hunt, 0.0f, target_node, game.Time () + 5.0f, false);
         }
       }
     }
@@ -955,7 +953,6 @@ void Bot::FocusEnemy () {
 
   // --- АГРЕССИВНЫЙ БОЙ ДЛЯ ЗОМБИ ---
   if (is_bot_zombie) {
-    // Непрерывный спам ударами при дистанции ближе 130 юнитов
     if (distance_sq < ystl::sqrf (130.0f) && dot > 0.50f) {
       wants_to_fire_ = true;
     }
@@ -1046,7 +1043,7 @@ void Bot::AttackMovement () {
       if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
           (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
 
-        StartTask (TaskId::SeekCover, TaskPri::SeekCover, kInvalidNodeIndex, 0.0f, true);
+        StartTask (TaskId::SeekCover, kTaskPriCover, kInvalidNodeIndex, 0.0f, true);
 
         if (!CheckWallOnBehind ()) {
           move_speed_ = -pev->maxspeed;
@@ -1063,13 +1060,11 @@ void Bot::AttackMovement () {
 
   // --- ДВИЖЕНИЕ ЗОМБИ В УПОРЕ ---
   if (is_bot_zombie) {
-    // В упоре (дистанция < 200) отключаем стрейфы и бежим строго вперед
     if (distance_sq < ystl::sqrf (200.0f)) {
       move_speed_ = pev->maxspeed;
       strafe_speed_ = 0.0f;
     }
 
-    // Проверка препятствий и низких проемов
     Trace::Result front_tr {};
     const ystl::Vector eyes = GetEyesPos ();
     const ystl::Vector forward = pev->v_angle.forward ();
@@ -1776,13 +1771,13 @@ void Bot::CheckGrenadesThrow () {
     const float max_throw_time = game.Time () + kGrenadeCheckTime * 3.6f;
 
     if (has_flag (states_, Sense::ThrowExplosive)) {
-      StartTask (TaskId::ThrowExplosive, TaskPri::Throw, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowExplosive, kTaskPriThrow, kInvalidNodeIndex, max_throw_time, false);
     }
     else if (has_flag (states_, Sense::ThrowFlashbang)) {
-      StartTask (TaskId::ThrowFlashbang, TaskPri::Throw, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowFlashbang, kTaskPriThrow, kInvalidNodeIndex, max_throw_time, false);
     }
     else if (has_flag (states_, Sense::ThrowSmoke)) {
-      StartTask (TaskId::ThrowSmoke, TaskPri::Throw, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowSmoke, kTaskPriThrow, kInvalidNodeIndex, max_throw_time, false);
     }
   }
   else {
