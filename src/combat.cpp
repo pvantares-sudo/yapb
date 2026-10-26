@@ -146,9 +146,6 @@ bool Bot::IsEnemyInDarkAreaCached (edict_t *enemy) {
 }
 
 bool Bot::CheckBodyParts (edict_t *target) {
-  // this function checks visibility of a bot target
-
-  // darkness blocks acquiring a new target, never drops a tracked one
   const bool dark_hidden = target != enemy_ && IsEnemyInDarkAreaCached (target);
 
   if (IsEnemyHidden (target) || IsEnemyInvincible (target) || IsEnemyNoTarget (target) || dark_hidden) {
@@ -158,7 +155,6 @@ bool Bot::CheckBodyParts (edict_t *target) {
     return false;
   }
 
-  // hitboxes requested ?
   if (game.Is (GameFlags::HasStudioModels) && cv_use_hitbox_enemy_targeting && hitbox_enumerator_) {
     return CheckBodyPartsWithHitboxes (target);
   }
@@ -172,7 +168,6 @@ bool Bot::CheckBodyPartsWithOffsets (edict_t *target) {
   auto spot = target->v.origin;
   auto self = Ent ();
 
-  // creatures can't hurt behind anything
   const auto ignore_flags = is_creature_ ? TraceIgnore::None : (cv_aim_trace_consider_glass ? TraceIgnore::Monsters : TraceIgnore::Everything);
 
   const auto hits_target = [&] () -> bool {
@@ -193,7 +188,6 @@ bool Bot::CheckBodyPartsWithOffsets (edict_t *target) {
     enemy_origin_ = result.end_pos;
   }
 
-  // check top of head
   spot.z += 25.0f;
   trace.Line (eyes, spot, ignore_flags, self, &result);
 
@@ -268,10 +262,8 @@ bool Bot::CheckBodyPartsWithHitboxes (edict_t *target) {
   };
   enemy_parts_ = Visibility::None;
 
-  // creatures can't hurt behind anything
   const auto ignore_flags = is_creature_ ? TraceIgnore::None : TraceIgnore::Everything;
 
-  // get the stomach hitbox
   trace.Line (eyes, hitbox_enumerator_->Get (target, PlayerPart::Stomach, refresh), ignore_flags, self, &result);
 
   if (hits_target ()) {
@@ -279,7 +271,6 @@ bool Bot::CheckBodyPartsWithHitboxes (edict_t *target) {
     enemy_origin_ = result.end_pos;
   }
 
-  // get the head hitbox
   trace.Line (eyes, hitbox_enumerator_->Get (target, PlayerPart::Head, refresh), ignore_flags, self, &result);
 
   if (hits_target ()) {
@@ -291,7 +282,6 @@ bool Bot::CheckBodyPartsWithHitboxes (edict_t *target) {
     return true;
   }
 
-  // get the left hitbox
   trace.Line (eyes, hitbox_enumerator_->Get (target, PlayerPart::LeftArm, refresh), ignore_flags, self, &result);
 
   if (hits_target ()) {
@@ -301,7 +291,6 @@ bool Bot::CheckBodyPartsWithHitboxes (edict_t *target) {
     return true;
   }
 
-  // get the right hitbox
   trace.Line (eyes, hitbox_enumerator_->Get (target, PlayerPart::RightArm, refresh), ignore_flags, self, &result);
 
   if (hits_target ()) {
@@ -311,7 +300,6 @@ bool Bot::CheckBodyPartsWithHitboxes (edict_t *target) {
     return true;
   }
 
-  // get the feet spot
   trace.Line (eyes, hitbox_enumerator_->Get (target, PlayerPart::Feet, refresh), ignore_flags, self, &result);
 
   if (hits_target ()) {
@@ -358,7 +346,6 @@ void Bot::TrackEnemies () {
     enemy_body_part_set_ = nullptr;
   }
 
-  // recover from knife, if has anything to fire at enemy
   if (has_flag (states_, Sense::SeeingEnemy) && UsesKnife () && !IsKnifeMode () && HasAnyAmmo () && IsOnFloor ()) {
     auto enemy = enemy_;
 
@@ -438,36 +425,34 @@ bool Bot::ShouldSwitchFocus (edict_t *current, edict_t *candidate) const {
 }
 
 bool Bot::LookupEnemies () {
-  // this function tries to find the best suitable enemy for the bot
-
   enemy_parts_ = Visibility::None;
   enemy_origin_.clear ();
 
-  // ZP Optimization: Do not look for enemies if round is frozen/in countdown
-  if (game_state.IsFreezePeriod () || cv_ignore_enemies || !enemy_ignore_timer_.elapsed () || !blind_timer_.elapsed ()) {
+  // Не ищем врагов, если раунд ещё не стартовал, либо действует ослепление/таймеры
+  if (cv_ignore_enemies || !enemy_ignore_timer_.elapsed () || !blind_timer_.elapsed ()) {
     return false;
   }
 
-  // ZP Optimization: If anyone on server is on knife/claws or HP > 1000, infection started.
-  // Until then, prevent friendly/pre-round team shooting.
-  bool round_has_zombies = false;
-  for (const auto &client : clients) {
-    if (client.IsUsedAndAlive ()) {
-      if (client.ent->v.health > 1000.0f || (client.ent->v.weapons & (1 << CSW_KNIFE) && !has_flag (client.ent->v.weapons, kPrimaryWeaponMask | kSecondaryWeaponMask))) {
-        round_has_zombies = true;
-        break;
+  // Защита от стрельбы до раунда: если раунд только начался или время от старта меньше 15 секунд,
+  // проверяем, появился ли хотя бы один реальный зомби (высокое HP или чисто нож без огнестрела)
+  if (game_state.TimeSinceRoundStart () < 15.0f) {
+    bool zombie_exists = false;
+    for (const auto &cl : clients) {
+      if (cl.IsUsedAndAlive () && cl.ent != nullptr) {
+        if (cl.ent->v.health > 1500.0f || (has_flag (cl.ent->v.weapons, kKnifeWeaponMask) && !has_flag (cl.ent->v.weapons, kPrimaryWeaponMask | kSecondaryWeaponMask))) {
+          zombie_exists = true;
+          break;
+        }
       }
     }
-  }
-
-  if (!round_has_zombies && !game.Is (GameFlags::CSDM)) {
-    return false;
+    if (!zombie_exists) {
+      return false; // До заражения ни в кого не целимся и не стреляем
+    }
   }
 
   edict_t *player, *new_enemy = nullptr;
   float nearest_distance_sq = ystl::sqrf (view_distance_);
 
-  // clear suspected flag
   if (!game.IsNullEntity (enemy_) && has_flag (states_, Sense::SeeingEnemy)) {
     states_ &= ~Sense::SuspectEnemy;
   }
@@ -487,16 +472,14 @@ bool Bot::LookupEnemies () {
   if (!game.IsNullEntity (enemy_)) {
     player = enemy_;
 
-    // is player is alive
     if (!enemy_update_timer_.elapsed () && player->v.origin.distance_sq (pev->origin) < nearest_distance_sq && game.IsAliveEntity (player) &&
         SeesEnemy (player)) {
 
       new_enemy = player;
-      enemy_update_timer_.start (UsesKnife () ? 1.0f : 0.85f);
+      enemy_update_timer_.start (UsesKnife () ? 1.25f : 0.85f);
     }
   }
 
-  // the old enemy is no longer visible or
   if (game.IsNullEntity (new_enemy)) {
     uint8_t *set = nullptr;
 
@@ -529,7 +512,6 @@ bool Bot::LookupEnemies () {
       }
     }
 
-    // search the world for players
     for (const auto &client : clients) {
       if (!client.IsUsedAndAlive () || client.IsSameTeam (team_)) {
         continue;
@@ -537,6 +519,7 @@ bool Bot::LookupEnemies () {
       player = client.ent;
 
       const float distance_sq = player->v.origin.distance_sq (pev->origin);
+
       const bool extended_range = cv_whose_your_daddy && (player->v.button & (IN_ATTACK | IN_ATTACK2)) && view_distance_ < max_view_distance_;
       const float effective_nearest_sq = extended_range ? ystl::sqrf (max_view_distance_) : nearest_distance_sq;
 
@@ -589,7 +572,7 @@ bool Bot::LookupEnemies () {
         target_switch_timer_.start (1.5f);
       }
     }
-    enemy_update_timer_.start (UsesKnife () ? 1.0f : 0.85f);
+    enemy_update_timer_.start (UsesKnife () ? 1.25f : 0.85f);
 
     if (game.IsNullEntity (new_enemy) && !game.IsNullEntity (shield_enemy)) {
       new_enemy = shield_enemy;
@@ -610,6 +593,7 @@ bool Bot::LookupEnemies () {
       last_enemy_origin_ = new_enemy->v.origin;
 
       bots.ReportTeamContact (team_, new_enemy, new_enemy->v.origin, 1);
+
       return true;
     }
     else {
@@ -798,8 +782,7 @@ ystl::Vector Bot::GetEnemyBodyOffset () {
 
   if (game.IsPlayerEntity (enemy_)) {
     if (has_flag (vis_parts, Visibility::Head) && has_flag (vis_parts, Visibility::Body)) {
-      // ZP Optimization: Higher headshot priority against high HP zombies
-      auto headshot_pct = (enemy_->v.health > 1000.0f) ? 80 : difficulty_data_->headshot_pct;
+      auto headshot_pct = difficulty_data_->headshot_pct;
 
       const bool should_pause = NeedToPauseFiring (distance);
       const bool recoil_high = IsRecoilHigh ();
@@ -983,10 +966,7 @@ void Bot::AttackMovement () {
     return;
   }
 
-  const bool is_zombie_role = (UsesKnife () || is_creature_ || pev->health > 1000.0f);
-
-  // use enemy as dest origin if with knife / zombie
-  if (is_zombie_role) {
+  if (UsesKnife () || is_creature_) {
     dest_origin_ = enemy_->v.origin;
   }
 
@@ -995,10 +975,10 @@ void Bot::AttackMovement () {
   }
 
   const auto distance_sq = pev->origin.distance_sq (enemy_->v.origin);
+
   auto approach = 0;
 
-  // ZP Optimization: Zombies ALWAYS approach at 100% speed, never retreat or seek cover
-  if (is_zombie_role) {
+  if (UsesKnife () || is_creature_) {
     approach = 100;
   }
   else if (has_flag (states_, Sense::SuspectEnemy) && !has_flag (states_, Sense::SeeingEnemy)) {
@@ -1009,14 +989,15 @@ void Bot::AttackMovement () {
   }
   else {
     approach = static_cast<int> (health_value_ * agression_level_);
+
     if (UsesSniper () && approach > 49) {
       approach = 49;
     }
   }
   const bool is_enemy_cone = IsInViewCone (enemy_->v.origin);
 
-  // ZP Optimization: Never take cover if bot is zombie
-  if (!game.Is (GameFlags::CSDM) && !IsKnifeMode () && !is_zombie_role) {
+  // Зомби (UsesKnife или существо) никогда не ищет укрытия и не отступает
+  if (!UsesKnife () && !is_creature_ && !game.Is (GameFlags::CSDM) && !IsKnifeMode ()) {
     if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
         (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
 
@@ -1033,15 +1014,14 @@ void Bot::AttackMovement () {
       move_speed_ = pev->maxspeed;
     }
   }
-  else if (is_zombie_role) {
+  else if (UsesKnife () || is_creature_) {
+    // Зомби всегда бежит строго вперед на максимальной скорости
     move_speed_ = pev->maxspeed;
   }
 
-  const bool is_full_view = all_flags (enemy_parts_, Visibility::Head | Visibility::Body);
-
   if (fight_style_check_timer_.elapsed ()) {
-    if (is_zombie_role) {
-      fight_style_ = Fight::Strafe;
+    if (UsesKnife () || is_creature_) {
+      fight_style_ = Fight::Strafe; // Зомби никогда не встает на месте
     }
     else if (UsesSniper () && !reload_data_.is_reloading && !sniper_stop_timer_.elapsed ()) {
       fight_style_ = Fight::Stay;
@@ -1081,9 +1061,6 @@ void Bot::AttackMovement () {
       fight_style_ = Fight::Stay;
     }
 
-    if ((IsDucking () || IsInNarrowPlace ()) || (!is_full_view && !fire_hurts_friend_)) {
-      fight_style_ = Fight::Stay;
-    }
     const auto pistol_strafe_distance = game.Is (GameFlags::CSDM) ? kSprayDistanceX2 * 3.0f : kSprayDistanceX2;
 
     if (approach < 30 || fire_hurts_friend_ ||
@@ -1093,16 +1070,15 @@ void Bot::AttackMovement () {
     fight_style_check_timer_.start (rg (1.0f, 3.0f));
   }
 
-  // ZP Optimization: Active Kiting. Humans backpedal aggressively from close zombies (within 400 units)
-  if (!is_zombie_role && distance_sq < ystl::sqrf (400.0f)) {
+  // Человек пятится назад, если враг с ножом/лапами подошел ближе 400 юнитов
+  if (!UsesKnife () && !is_creature_ && distance_sq < ystl::sqrf (400.0f)) {
     move_speed_ = -pev->maxspeed;
   }
 
-  if (is_zombie_role) {
+  if ((UsesKnife () && is_enemy_cone) || is_creature_) {
     if (distance_sq < ystl::sqrf (100.0f)) {
       fight_style_ = Fight::Strafe;
     }
-    move_speed_ = pev->maxspeed;
   }
 
   if (fight_style_ == Fight::Strafe) {
@@ -1186,7 +1162,7 @@ void Bot::AttackMovement () {
       }
     }
 
-    if (wall_on_right && wall_on_left && !is_zombie_role) {
+    if (wall_on_right && wall_on_left && !UsesKnife ()) {
       strafe_speed_ = 0.0f;
       move_speed_ = 0.0f;
 
@@ -1194,7 +1170,7 @@ void Bot::AttackMovement () {
       dodge_strafe_dir_ = Dodge::None;
     }
 
-    if (!is_zombie_role && approach >= 30 && distance_sq >= ystl::sqrf (400.0f)) {
+    if (!UsesKnife () && approach >= 30) {
       move_speed_ = 0.0f;
     }
 
@@ -1205,16 +1181,15 @@ void Bot::AttackMovement () {
     }
   }
   else if (fight_style_ == Fight::Stay) {
-    if (is_zombie_role) {
+    if ((UsesKnife () || is_creature_) && distance_sq < ystl::sqrf (128.0f)) {
       move_speed_ = pev->maxspeed;
       strafe_speed_ = 0.0f;
     }
     else {
-      // ZP Optimization: Only keep ducking if already ducking (inside vents / camp spots).
-      // Removed the combat ducking penalty on open ground!
+      // Сохраняем присед только если бот уже сидит в нычке/проходе, убирая боевой присед на открытом месте
       const bool already_ducking = !duck_timer_.elapsed () || IsDucking () || ((pev->button | pev->oldbuttons) & IN_DUCK);
 
-      if (already_ducking) {
+      if (already_ducking && IsInNarrowPlace ()) {
         duck_timer_.start (frame_interval_ * 3.0f);
       }
       move_speed_ = 0.0f;
@@ -1222,7 +1197,7 @@ void Bot::AttackMovement () {
     }
   }
 
-  if (reload_data_.is_reloading && !is_zombie_role) {
+  if (reload_data_.is_reloading) {
     move_speed_ = -pev->maxspeed;
 
     if (is_enemy_cone) {
@@ -1403,6 +1378,7 @@ ystl::Vector Bot::CalcToss (const ystl::Vector &start, const ystl::Vector &stop)
   const float time_from_apex = ystl::sqrtf (descent_height / (0.5f * gravity));
 
   const float total_time = time_to_apex + time_from_apex;
+
   ystl::Vector velocity = (target - start) / total_time;
   velocity.z = gravity * time_to_apex;
 
@@ -1455,6 +1431,7 @@ ystl::Vector Bot::CalcThrow (const ystl::Vector &start, const ystl::Vector &stop
   }
 
   const float half_time = flight_time * 0.5f;
+
   ystl::Vector velocity = displacement * (1.0f / flight_time);
   velocity.z += gravity * half_time;
 
@@ -1462,6 +1439,7 @@ ystl::Vector Bot::CalcThrow (const ystl::Vector &start, const ystl::Vector &stop
   apex.z += 0.5f * gravity * half_time * half_time;
 
   Trace::Result tr {};
+
   trace.Hull (start, apex, TraceIgnore::None, head_hull, Ent (), &tr);
 
   if (!ystl::fequal (tr.fraction, 1.0f)) {
