@@ -476,7 +476,8 @@ bool Bot::LookupEnemies () {
         SeesEnemy (player)) {
 
       new_enemy = player;
-      enemy_update_timer_.start (is_bot_zombie ? 0.3f : 0.85f);
+      // Зомби мгновенно пересчитывает перемещения жертвы
+      enemy_update_timer_.start (is_bot_zombie ? 0.3f : (UsesKnife () ? 1.25f : 0.85f));
     }
   }
 
@@ -572,7 +573,7 @@ bool Bot::LookupEnemies () {
         target_switch_timer_.start (1.5f);
       }
     }
-    enemy_update_timer_.start (is_bot_zombie ? 0.3f : 0.85f);
+    enemy_update_timer_.start (is_bot_zombie ? 0.3f : (UsesKnife () ? 1.25f : 0.85f));
 
     if (game.IsNullEntity (new_enemy) && !game.IsNullEntity (shield_enemy)) {
       new_enemy = shield_enemy;
@@ -581,7 +582,7 @@ bool Bot::LookupEnemies () {
 
   // --- ГЛОБАЛЬНЫЙ РАДАР (WALLHACK) ДЛЯ ЗОМБИ ---
   if (game.IsNullEntity (new_enemy) && is_bot_zombie) {
-    float closest_dist_sq = ystl::kInfiniteDistance;
+    float closest_dist_sq = kInfiniteDistance;
     edict_t *closest_human = nullptr;
 
     for (const auto &client : clients) {
@@ -589,6 +590,7 @@ bool Bot::LookupEnemies () {
         continue;
       }
 
+      // Человек - игрок без сверх-HP зомби
       if (client.ent->v.health <= 1500.0f) {
         const float d_sq = pev->origin.distance_sq (client.ent->v.origin);
         if (d_sq < closest_dist_sq) {
@@ -607,7 +609,7 @@ bool Bot::LookupEnemies () {
       if (GetTaskId () != TaskId::Hunt) {
         const int target_node = graph.GetNearest (last_enemy_origin_);
         if (graph.Exists (target_node)) {
-          StartTask (TaskId::Hunt, TaskPri::kHunt, target_node, game.Time () + 5.0f, false);
+          StartTask (TaskId::Hunt, TaskPri::Normal, target_node, game.Time () + 5.0f, false);
         }
       }
     }
@@ -940,26 +942,23 @@ void Bot::FocusEnemy () {
     return;
   }
 
-  const bool is_bot_zombie = UsesKnife () || is_creature_ || pev->health > 1500.0f;
-
-  // Aim for the head/body
   look_at_ = GetEnemyBodyOffset ();
 
   if (!enemy_surprise_timer_.elapsed ()) {
     return;
   }
-  const float distance_sq = look_at_.distance_sq2d (GetEyesPos ());
 
+  const bool is_bot_zombie = UsesKnife () || is_creature_ || pev->health > 1500.0f;
+  const float distance_sq = look_at_.distance_sq2d (GetEyesPos ());
   const float dot = util.ViewDot (Ent (), enemy_origin_);
   const float enemy_dot = util.ViewDot (enemy_, pev->origin);
 
-  // --- АГРЕССИВНАЯ АТАКА ЛАПАМИ ДЛЯ ЗОМБИ ---
+  // --- АГРЕССИВНЫЙ БОЙ ДЛЯ ЗОМБИ ---
   if (is_bot_zombie) {
-    // Зомби начинает махать лапами заранее (до 130 юнитов) даже при широком угле прицела (dot > 0.50f)
+    // Непрерывный спам ударами при дистанции ближе 130 юнитов
     if (distance_sq < ystl::sqrf (130.0f) && dot > 0.50f) {
       wants_to_fire_ = true;
     }
-    // В упоре (до 90 юнитов) жмём атаку гарантированно в любом положении
     else if (distance_sq < ystl::sqrf (90.0f)) {
       wants_to_fire_ = true;
     }
@@ -969,7 +968,6 @@ void Bot::FocusEnemy () {
     return;
   }
 
-  // Стандартная стрельба для людей
   if (distance_sq < ystl::sqrf (128.0f) && !UsesSniper ()) {
     if (dot > 0.80f) {
       wants_to_fire_ = true;
@@ -1037,7 +1035,7 @@ void Bot::AttackMovement () {
     }
   }
 
-  // --- КАЙТИНГ ДЛЯ ЛЮДЕЙ ---
+  // Человек пятится и кайтит с дистанции 800 юнитов
   if (!is_bot_zombie) {
     const float retreat_dist = is_target_zombie ? 800.0f : 350.0f;
 
@@ -1048,7 +1046,7 @@ void Bot::AttackMovement () {
       if (has_flag (states_, Sense::SeeingEnemy) && approach < 30 && !game_state.IsBombPlanted () && cover_search_timer_.elapsed () &&
           (is_enemy_cone || is_vip_ || reload_data_.is_reloading || infected_enemy_team_)) {
 
-        StartTask (TaskId::SeekCover, TaskPri::kSeekCover, kInvalidNodeIndex, 0.0f, true);
+        StartTask (TaskId::SeekCover, TaskPri::SeekCover, kInvalidNodeIndex, 0.0f, true);
 
         if (!CheckWallOnBehind ()) {
           move_speed_ = -pev->maxspeed;
@@ -1063,20 +1061,15 @@ void Bot::AttackMovement () {
     }
   }
 
-  // --- ПЕРЕМЕЩЕНИЕ ЗОМБИ (БЕЗ СТРАХА И ТАНЦЕВ) ---
+  // --- ДВИЖЕНИЕ ЗОМБИ В УПОРЕ ---
   if (is_bot_zombie) {
-    move_speed_ = pev->maxspeed;
-
-    // В упоре (дистанция меньше 200 юнитов) отключаем любые боковые стрейфы - бежим напролом
+    // В упоре (дистанция < 200) отключаем стрейфы и бежим строго вперед
     if (distance_sq < ystl::sqrf (200.0f)) {
-      fight_style_ = Fight::Stay; // Не активируем Strafe-логику
+      move_speed_ = pev->maxspeed;
       strafe_speed_ = 0.0f;
     }
-    else {
-      fight_style_ = Fight::Strafe;
-    }
 
-    // Проверяем препятствие перед лицом для преодоления нычек и ящиков
+    // Проверка препятствий и низких проемов
     Trace::Result front_tr {};
     const ystl::Vector eyes = GetEyesPos ();
     const ystl::Vector forward = pev->v_angle.forward ();
@@ -1086,7 +1079,7 @@ void Bot::AttackMovement () {
     if (front_tr.fraction < 1.0f) {
       pev->button |= IN_DUCK;
 
-      if (IsOnFloor () && jump_time_ + 0.8f < game.Time ()) {
+      if (IsOnFloor () && jump_time_ + 1.0f < game.Time ()) {
         pev->button |= IN_JUMP;
       }
     }
@@ -1257,7 +1250,7 @@ void Bot::AttackMovement () {
     }
   }
 
-  if (reload_data_.is_reloading && !is_bot_zombie) {
+  if (reload_data_.is_reloading) {
     move_speed_ = -pev->maxspeed;
 
     if (is_enemy_cone) {
@@ -1783,13 +1776,13 @@ void Bot::CheckGrenadesThrow () {
     const float max_throw_time = game.Time () + kGrenadeCheckTime * 3.6f;
 
     if (has_flag (states_, Sense::ThrowExplosive)) {
-      StartTask (TaskId::ThrowExplosive, TaskPri::kThrow, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowExplosive, TaskPri::Throw, kInvalidNodeIndex, max_throw_time, false);
     }
     else if (has_flag (states_, Sense::ThrowFlashbang)) {
-      StartTask (TaskId::ThrowFlashbang, TaskPri::kThrow, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowFlashbang, TaskPri::Throw, kInvalidNodeIndex, max_throw_time, false);
     }
     else if (has_flag (states_, Sense::ThrowSmoke)) {
-      StartTask (TaskId::ThrowSmoke, TaskPri::kThrow, kInvalidNodeIndex, max_throw_time, false);
+      StartTask (TaskId::ThrowSmoke, TaskPri::Throw, kInvalidNodeIndex, max_throw_time, false);
     }
   }
   else {
